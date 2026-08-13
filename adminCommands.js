@@ -63,6 +63,14 @@ module.exports = (bot) => {
                     Markup.button.callback(`✅ Approve ${req.userName.substring(0, 10)}`, `approve_req_${req._id}`),
                     Markup.button.callback(`❌ Deny ${req.userName.substring(0, 10)}`, `deny_req_${req._id}`)
                 ]);
+            } else if (status === 'GRANTED') {
+                buttons.push([
+                    Markup.button.callback(`🚫 Revoke Access (${req.userName.substring(0, 12)})`, `revoke_req_${req._id}`)
+                ]);
+            } else if (status === 'DENIED') {
+                buttons.push([
+                    Markup.button.callback(`🔄 Re-Approve (${req.userName.substring(0, 12)})`, `approve_req_${req._id}`)
+                ]);
             }
         });
 
@@ -212,6 +220,56 @@ module.exports = (bot) => {
                 `❌ **Request Update:** Your access request was not approved by the admin.`
             );
         } catch (e) { console.error("Could not notify user:", e); }
+    });
+
+    bot.action(/^revoke_req_(.+)$/, async (ctx) => {
+        if (ctx.from.id.toString() !== ADMIN_ID) return;
+        const reqId = ctx.match[1];
+
+        const req = await AccessRequest.findById(reqId).populate('requestedBatches');
+        if (!req) return ctx.answerCbQuery("Request not found!");
+
+        req.status = 'DENIED';
+        await req.save();
+
+        let user = await User.findOne({ telegramId: req.userId });
+
+        if (req.requestType === 'ADD_BATCH') {
+            if (user) {
+                user.isAddAuthorized = false;
+                user.maxBatchesAllowed = 0;
+                await user.save();
+            }
+
+            ctx.answerCbQuery("Batch add permission revoked!");
+            ctx.editMessageText(`🚫 **REVOKED**: Batch addition authorization revoked for user **${req.userName}** (\`${req.userId}\`).`, { parse_mode: 'Markdown' });
+
+            try {
+                await bot.telegram.sendMessage(
+                    req.userId,
+                    `⚠️ **Notice:** Your batch creation authorization has been revoked by the Admin.`
+                );
+            } catch (e) { console.error("Could not notify user:", e); }
+
+        } else if (req.requestType === 'BATCH_ACCESS') {
+            if (user && user.allowedBatches) {
+                const removeIds = req.requestedBatches.map(b => b._id.toString());
+                user.allowedBatches = user.allowedBatches.filter(bId => !removeIds.includes(bId.toString()));
+                await user.save();
+            }
+
+            const batchNames = req.requestedBatches.map(b => b.name).join(', ') || 'batches';
+            ctx.answerCbQuery("Batch access revoked!");
+            ctx.editMessageText(`🚫 **REVOKED**: Access to **${batchNames}** revoked for user **${req.userName}** (\`${req.userId}\`).`, { parse_mode: 'Markdown' });
+
+            try {
+                await bot.telegram.sendMessage(
+                    req.userId,
+                    `⚠️ **Notice:** Your access to the following batch(es) has been revoked by the Admin:\n\n• ${batchNames}`,
+                    { parse_mode: 'Markdown' }
+                );
+            } catch (e) { console.error("Could not notify user:", e); }
+        }
     });
 
     // -----------------------------------------------------
