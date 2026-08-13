@@ -24,6 +24,14 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  maxBatchesAllowed: {
+    type: Number,
+    default: 0
+  },
+  batchesCreatedCount: {
+    type: Number,
+    default: 0
+  },
   allowedBatches: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Batch'
