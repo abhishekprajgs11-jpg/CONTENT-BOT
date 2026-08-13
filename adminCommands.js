@@ -112,21 +112,16 @@ module.exports = (bot) => {
         }
 
         if (req.requestType === 'ADD_BATCH') {
-            user.isAddAuthorized = true;
-            if (user.role === 'USER') user.role = 'CONTRIBUTOR';
-            await user.save();
+            const keyboard = Markup.inlineKeyboard([
+                [Markup.button.callback("1 Batch", `limit_req_${req._id}_1`), Markup.button.callback("3 Batches", `limit_req_${req._id}_3`)],
+                [Markup.button.callback("5 Batches", `limit_req_${req._id}_5`), Markup.button.callback("10 Batches", `limit_req_${req._id}_10`)],
+                [Markup.button.callback("♾️ Unlimited Batches", `limit_req_${req._id}_999999`)]
+            ]);
 
-            ctx.answerCbQuery("Granted batch add permission!");
-            ctx.editMessageText(`✅ **GRANTED**: User **${req.userName}** (\`${req.userId}\`) is now authorized to ADD batches!`, { parse_mode: 'Markdown' });
-
-            // Notify user
-            try {
-                await bot.telegram.sendMessage(
-                    req.userId,
-                    `🎉 **PERMIT GRANTED!**\n\nAdmin has authorized you to add and upload batches to the bot!\n\n👉 Type /add to start creating batches.`
-                );
-            } catch (e) { console.error("Could not notify user:", e); }
-
+            return ctx.editMessageText(
+                `⚙️ **SELECT BATCH CREATION LIMIT**\n\nHow many batches is **${req.userName}** (\`${req.userId}\`) allowed to create/add?`,
+                { parse_mode: 'Markdown', reply_markup: keyboard.reply_markup }
+            );
         } else if (req.requestType === 'BATCH_ACCESS') {
             const newBatches = req.requestedBatches.map(b => b._id);
             user.allowedBatches = [...new Set([...user.allowedBatches.map(b => b.toString()), ...newBatches.map(b => b.toString())])];
@@ -145,6 +140,56 @@ module.exports = (bot) => {
                 );
             } catch (e) { console.error("Could not notify user:", e); }
         }
+    });
+
+    bot.action(/^limit_req_(.+)_(.+)$/, async (ctx) => {
+        if (ctx.from.id.toString() !== ADMIN_ID) return;
+        const reqId = ctx.match[1];
+        const limitStr = ctx.match[2];
+        const limit = parseInt(limitStr, 10);
+
+        const req = await AccessRequest.findById(reqId);
+        if (!req) return ctx.answerCbQuery("Request not found!");
+
+        req.status = 'GRANTED';
+        await req.save();
+
+        let user = await User.findOne({ telegramId: req.userId });
+        if (!user) {
+            user = new User({ telegramId: req.userId, name: req.userName, username: req.userUsername });
+        }
+
+        user.isAddAuthorized = true;
+        if (user.role === 'USER') user.role = 'CONTRIBUTOR';
+
+        if (limit === 999999) {
+            user.maxBatchesAllowed = 999999;
+        } else {
+            // Add to existing capacity or set limit
+            user.maxBatchesAllowed = Math.max(user.maxBatchesAllowed, user.batchesCreatedCount) + limit;
+        }
+        await user.save();
+
+        const limitDisplay = limit === 999999 ? 'Unlimited' : `${limit} new`;
+        const totalAllowedDisplay = user.maxBatchesAllowed >= 999999 ? 'Unlimited' : `${user.maxBatchesAllowed}`;
+
+        ctx.answerCbQuery("Batch limit authorized!");
+        ctx.editMessageText(
+            `✅ **GRANTED**: User **${req.userName}** (\`${req.userId}\`) is authorized to add **${limitDisplay}** batch(es)!\n` +
+            `📊 Total Allowed: **${totalAllowedDisplay}** | Created so far: **${user.batchesCreatedCount}**`,
+            { parse_mode: 'Markdown' }
+        );
+
+        // Notify user
+        try {
+            await bot.telegram.sendMessage(
+                req.userId,
+                `🎉 **PERMIT GRANTED!**\n\n` +
+                `Admin has authorized you to create **${limitDisplay}** batch(es)!\n` +
+                `📌 Total Authorized Limit: **${totalAllowedDisplay}** batch(es).\n\n` +
+                `👉 Type /add to start creating batches.`
+            );
+        } catch (e) { console.error("Could not notify user:", e); }
     });
 
     bot.action(/^deny_req_(.+)$/, async (ctx) => {
