@@ -115,44 +115,74 @@ bot.command('add', async (ctx) => {
     const userId = ctx.from.id.toString();
     const user = await User.findOne({ telegramId: userId });
 
-    if (!user || (!user.isAddAuthorized && user.role !== 'ADMIN')) {
-        // Request authorization from Main Admin
-        const existingReq = await AccessRequest.findOne({ userId, requestType: 'ADD_BATCH', status: 'PENDING' });
-        if (existingReq) {
-            return ctx.reply("⏳ Your request for Batch Add permission is already pending admin approval.");
+    const isMainAdmin = userId === ADMIN_ID;
+
+    if (!isMainAdmin) {
+        if (!user || !user.isAddAuthorized) {
+            // Request authorization from Main Admin
+            const existingReq = await AccessRequest.findOne({ userId, requestType: 'ADD_BATCH', status: 'PENDING' });
+            if (existingReq) {
+                return ctx.reply("⏳ Your request for Batch Add permission is already pending admin approval.");
+            }
+
+            const newReq = new AccessRequest({
+                userId,
+                userName: `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim() || 'User',
+                userUsername: ctx.from.username || '',
+                requestType: 'ADD_BATCH',
+                status: 'PENDING'
+            });
+            await newReq.save();
+
+            ctx.reply("🔒 **AUTHORIZATION REQUIRED**\n\nYou do not have permission to add batches yet. A permission request has been sent to the Admin. You will be notified once approved!", { parse_mode: 'Markdown' });
+
+            // Alert Main Admin
+            try {
+                await bot.telegram.sendMessage(
+                    ADMIN_ID,
+                    `📩 **NEW BATCH ADD PERMISSION REQUEST**\n\n` +
+                    `👤 User: **${newReq.userName}** (@${newReq.userUsername})\n` +
+                    `🆔 User ID: \`${userId}\`\n\n` +
+                    `This user wants authorization to add and upload new batches.`,
+                    {
+                        parse_mode: 'Markdown',
+                        reply_markup: Markup.inlineKeyboard([
+                            [
+                                Markup.button.callback("✅ Grant Permission", `approve_req_${newReq._id}`),
+                                Markup.button.callback("❌ Deny", `deny_req_${newReq._id}`)
+                            ]
+                        ]).reply_markup
+                    }
+                );
+            } catch (e) { console.error("Could not send admin alert:", e); }
+            return;
         }
 
-        const newReq = new AccessRequest({
-            userId,
-            userName: `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim() || 'User',
-            userUsername: ctx.from.username || '',
-            requestType: 'ADD_BATCH',
-            status: 'PENDING'
-        });
-        await newReq.save();
+        // Check if contributor reached their batch limit
+        if (user.batchesCreatedCount >= user.maxBatchesAllowed) {
+            const limitDisplay = user.maxBatchesAllowed >= 999999 ? 'Unlimited' : user.maxBatchesAllowed;
 
-        ctx.reply("🔒 **AUTHORIZATION REQUIRED**\n\nYou do not have permission to add batches yet. A permission request has been sent to the Admin. You will be notified once approved!", { parse_mode: 'Markdown' });
+            const existingReq = await AccessRequest.findOne({ userId, requestType: 'ADD_BATCH', status: 'PENDING' });
+            if (existingReq) {
+                return ctx.reply(
+                    `⚠️ **BATCH CREATION LIMIT REACHED**\n\n` +
+                    `You have created **${user.batchesCreatedCount}** / **${limitDisplay}** authorized batches.\n` +
+                    `⏳ Your request for additional batch capacity is currently pending admin approval.`,
+                    { parse_mode: 'Markdown' }
+                );
+            }
 
-        // Alert Main Admin
-        try {
-            await bot.telegram.sendMessage(
-                ADMIN_ID,
-                `📩 **NEW BATCH ADD PERMISSION REQUEST**\n\n` +
-                `👤 User: **${newReq.userName}** (@${newReq.userUsername})\n` +
-                `🆔 User ID: \`${userId}\`\n\n` +
-                `This user wants authorization to add and upload new batches.`,
-                {
-                    parse_mode: 'Markdown',
-                    reply_markup: Markup.inlineKeyboard([
-                        [
-                            Markup.button.callback("✅ Grant Permission", `approve_req_${newReq._id}`),
-                            Markup.button.callback("❌ Deny", `deny_req_${newReq._id}`)
-                        ]
-                    ]).reply_markup
-                }
+            const keyboard = Markup.inlineKeyboard([
+                [Markup.button.callback("📩 Request More Batch Capacity", "req_more_batches")]
+            ]);
+
+            return ctx.reply(
+                `⚠️ **BATCH CREATION LIMIT REACHED**\n\n` +
+                `You have created **${user.batchesCreatedCount}** out of **${limitDisplay}** authorized batches.\n\n` +
+                `Click below to request additional batch creation authorization from the Admin!`,
+                { parse_mode: 'Markdown', reply_markup: keyboard.reply_markup }
             );
-        } catch (e) { console.error("Could not send admin alert:", e); }
-        return;
+        }
     }
 
     // Authorized User: Start Batch Wizard
@@ -166,6 +196,52 @@ bot.command('add', async (ctx) => {
     const keyboard = Markup.inlineKeyboard(categoryButtons, { columns: 2 });
 
     ctx.reply("➕ **CREATE NEW BATCH**\n\nPlease select the **Category** for this batch:", { parse_mode: 'Markdown', reply_markup: keyboard.reply_markup });
+});
+
+bot.action("req_more_batches", async (ctx) => {
+    const userId = ctx.from.id.toString();
+    const user = await User.findOne({ telegramId: userId });
+
+    const existingReq = await AccessRequest.findOne({ userId, requestType: 'ADD_BATCH', status: 'PENDING' });
+    if (existingReq) {
+        return ctx.answerCbQuery("Request already pending admin approval!");
+    }
+
+    const newReq = new AccessRequest({
+        userId,
+        userName: `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim() || 'User',
+        userUsername: ctx.from.username || '',
+        requestType: 'ADD_BATCH',
+        status: 'PENDING'
+    });
+    await newReq.save();
+
+    ctx.answerCbQuery("Request sent to Admin!");
+    ctx.editMessageText(
+        `✅ **REQUEST SENT**\n\nYour request for additional batch creation limit has been sent to the Admin!`,
+        { parse_mode: 'Markdown' }
+    );
+
+    // Alert Main Admin
+    try {
+        await bot.telegram.sendMessage(
+            ADMIN_ID,
+            `📩 **MORE BATCH CAPACITY REQUEST**\n\n` +
+            `👤 User: **${newReq.userName}** (@${newReq.userUsername})\n` +
+            `🆔 User ID: \`${userId}\`\n` +
+            `📊 Batches Created: **${user ? user.batchesCreatedCount : 0}** / **${user ? user.maxBatchesAllowed : 0}**\n\n` +
+            `This user wants additional batch creation capacity.`,
+            {
+                parse_mode: 'Markdown',
+                reply_markup: Markup.inlineKeyboard([
+                    [
+                        Markup.button.callback("✅ Set/Increase Limit", `approve_req_${newReq._id}`),
+                        Markup.button.callback("❌ Deny", `deny_req_${newReq._id}`)
+                    ]
+                ]).reply_markup
+            }
+        );
+    } catch (e) { console.error("Could not send admin alert:", e); }
 });
 
 bot.action(/^add_cat_(.+)$/, async (ctx) => {
@@ -416,6 +492,14 @@ bot.on('text', async (ctx, next) => {
         });
         await newBatch.save();
 
+        if (userId !== ADMIN_ID) {
+            await User.findOneAndUpdate({ telegramId: userId }, { $inc: { batchesCreatedCount: 1 } });
+        }
+
+        const user = await User.findOne({ telegramId: userId });
+        const createdCount = user ? user.batchesCreatedCount : 1;
+        const maxAllowedStr = (user && user.maxBatchesAllowed >= 999999) ? 'Unlimited' : (user ? user.maxBatchesAllowed : 'Unlimited');
+
         state.step = 'UPLOADING_MEDIA';
         state.batchId = newBatch._id;
         state.mediaCount = 0;
@@ -423,7 +507,8 @@ bot.on('text', async (ctx, next) => {
 
         ctx.reply(
             `🚀 **BATCH CREATED: ${newBatch.name}**\n` +
-            `📌 Category: **${newBatch.category}**\n\n` +
+            `📌 Category: **${newBatch.category}**\n` +
+            `📊 Your Batch Count: **${createdCount}** / **${maxAllowedStr}**\n\n` +
             `👉 **Send/Upload all your videos, files, documents, photos, or audio now!**\n` +
             `I will automatically index and preserve the exact order of all items.\n\n` +
             `Type **/done** or **/stopupload** when you are finished uploading.`,
